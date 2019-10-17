@@ -135,6 +135,7 @@ func newRaftNode(cfg raftNodeConfig) *raftNode {
 		raftNodeConfig: cfg,
 		// set up contention detectors for raft heartbeat message.
 		// expect to send a heartbeat within 2 heartbeat intervals.
+		// 超时时间 = 2 * 心跳时间
 		td:         contention.NewTimeoutDetector(2 * cfg.heartbeat),
 		readStateC: make(chan raft.ReadState, 1),
 		msgSnapC:   make(chan raftpb.Message, maxInFlightMsgSnap),
@@ -145,6 +146,7 @@ func newRaftNode(cfg raftNodeConfig) *raftNode {
 	if r.heartbeat == 0 {
 		r.ticker = &time.Ticker{}
 	} else {
+		// 定时器
 		r.ticker = time.NewTicker(r.heartbeat)
 	}
 	return r
@@ -157,6 +159,7 @@ func (r *raftNode) tick() {
 	r.tickMu.Unlock()
 }
 
+// 启动运行raftNode
 // start prepares and starts raftNode in a new goroutine. It is no longer safe
 // to modify the fields after it has been started.
 func (r *raftNode) start(rh *raftReadyHandler) {
@@ -166,10 +169,14 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 		defer r.onStop()
 		islead := false
 
+		// raftNode
 		for {
+
 			select {
+			// 时钟驱动，处理heartbeat和elect timeout
 			case <-r.ticker.C:
 				r.tick()
+			// 消息监听
 			case rd := <-r.Ready():
 				if rd.SoftState != nil {
 					newLeader := rd.SoftState.Lead != raft.None && rh.getLead() != rd.SoftState.Lead
@@ -246,6 +253,7 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 
 				if !raft.IsEmptySnap(rd.Snapshot) {
 					// gofail: var raftBeforeSaveSnap struct{}
+					// 持久化快照
 					if err := r.storage.SaveSnap(rd.Snapshot); err != nil {
 						if r.lg != nil {
 							r.lg.Fatal("failed to save Raft snapshot", zap.Error(err))
@@ -254,9 +262,11 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 						}
 					}
 					// etcdserver now claim the snapshot has been persisted onto the disk
+					// 空信息，通知快照已经持久化完毕
 					notifyc <- struct{}{}
 
 					// gofail: var raftAfterSaveSnap struct{}
+					// 执行快照条目的指令
 					r.raftStorage.ApplySnapshot(rd.Snapshot)
 					if r.lg != nil {
 						r.lg.Info("applied incoming Raft snapshot", zap.Uint64("snapshot-index", rd.Snapshot.Metadata.Index))
@@ -272,6 +282,7 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 					// finish processing incoming messages before we signal raftdone chan
 					msgs := r.processMessages(rd.Messages)
 
+					// 空信息，通知日志条目已经持久化到磁盘
 					// now unblocks 'applyAll' that waits on Raft log disk writes before triggering snapshots
 					notifyc <- struct{}{}
 
@@ -431,6 +442,7 @@ func startNode(cfg ServerConfig, cl *membership.RaftCluster, ids []types.ID) (id
 			ClusterID: uint64(cl.ID()),
 		},
 	)
+	// create\rename
 	if w, err = wal.Create(cfg.Logger, cfg.WALDir(), metadata); err != nil {
 		if cfg.Logger != nil {
 			cfg.Logger.Panic("failed to create WAL", zap.Error(err))

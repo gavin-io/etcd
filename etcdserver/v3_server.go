@@ -92,6 +92,7 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 	}(time.Now())
 
 	if !r.Serializable {
+		// 通知read routine处理客户端请求
 		err = s.linearizableReadNotify(ctx)
 		if err != nil {
 			return nil, err
@@ -631,17 +632,21 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 // Watchable returns a watchable interface attached to the etcdserver.
 func (s *EtcdServer) Watchable() mvcc.WatchableKV { return s.KV() }
 
+// 线性一致性读
 func (s *EtcdServer) linearizableReadLoop() {
 	var rs raft.ReadState
 
 	for {
 		ctxToSend := make([]byte, 8)
 		id1 := s.reqIDGen.Next()
+		// ctxToSend：id1
 		binary.BigEndian.PutUint64(ctxToSend, id1)
+		// 通知丢弃已读请求
 		leaderChangedNotifier := s.leaderChangedNotify()
 		select {
 		case <-leaderChangedNotifier:
 			continue
+		// 接收读请求
 		case <-s.readwaitc:
 		case <-s.stopping:
 			return
@@ -656,6 +661,7 @@ func (s *EtcdServer) linearizableReadLoop() {
 
 		lg := s.getLogger()
 		cctx, cancel := context.WithTimeout(context.Background(), s.Cfg.ReqTimeout())
+		// ReadIndex机制，ctxToSend：id1
 		if err := s.r.ReadIndex(cctx, ctxToSend); err != nil {
 			cancel()
 			if err == raft.ErrStopped {
@@ -734,6 +740,7 @@ func (s *EtcdServer) linearizableReadLoop() {
 
 func (s *EtcdServer) linearizableReadNotify(ctx context.Context) error {
 	s.readMu.RLock()
+	// 通知read routine处理客户端请求
 	nc := s.readNotifier
 	s.readMu.RUnlock()
 

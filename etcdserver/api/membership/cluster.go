@@ -84,6 +84,7 @@ func NewClusterFromURLsMap(lg *zap.Logger, token string, urlsmap types.URLsMap) 
 		}
 		c.members[m.ID] = m
 	}
+	// cluster id
 	c.genID()
 	return c, nil
 }

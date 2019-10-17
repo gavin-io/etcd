@@ -53,11 +53,13 @@ type Ready struct {
 	// The current volatile state of a Node.
 	// SoftState will be nil if there is no update.
 	// It is not required to consume or store SoftState.
+	// 包括leadID, Follower, Candidate, PreCandidate, Leader
 	*SoftState
 
 	// The current state of a Node to be saved to stable storage BEFORE
 	// Messages are sent.
 	// HardState will be equal to empty state if there is no update.
+	// 包括Term, Vote, Commit
 	pb.HardState
 
 	// ReadStates can be used for node to serve linearizable read requests locally
@@ -319,6 +321,7 @@ func (n *node) run() {
 			readyc = n.readyc
 		}
 
+		// 不是Leader
 		if lead != r.lead {
 			if r.hasLeader() {
 				if lead == None {
@@ -346,8 +349,10 @@ func (n *node) run() {
 				pm.result <- err
 				close(pm.result)
 			}
+		// 接受stepWithWaitOption的通过node.recvc信道传送过来的msg
 		case m := <-n.recvc:
 			// filter out response message from unknown From.
+			// pr为空， 由于消息类型为MsgReadIndex，IsResponseMsg(m.Type)返回false
 			if pr := r.prs.Progress[m.From]; pr != nil || !IsResponseMsg(m.Type) {
 				r.Step(m)
 			}
@@ -451,8 +456,10 @@ func (n *node) stepWait(ctx context.Context, m pb.Message) error {
 // Step advances the state machine using msgs. The ctx.Err() will be returned,
 // if any.
 func (n *node) stepWithWaitOption(ctx context.Context, m pb.Message, wait bool) error {
+	// 消息类型：MsgReadIndex
 	if m.Type != pb.MsgProp {
 		select {
+		// 请求消息发送给node.recvc信道，由node.run进行处理
 		case n.recvc <- m:
 			return nil
 		case <-ctx.Done():
@@ -547,6 +554,7 @@ func (n *node) TransferLeadership(ctx context.Context, lead, transferee uint64) 
 }
 
 func (n *node) ReadIndex(ctx context.Context, rctx []byte) error {
+	// 消息类型：MsgReadIndex，消息Data:rctx，为消息ID
 	return n.step(ctx, pb.Message{Type: pb.MsgReadIndex, Entries: []pb.Entry{{Data: rctx}}})
 }
 

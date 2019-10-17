@@ -84,6 +84,7 @@ func newMember(name string, peerURLs types.URLs, clusterName string, now *time.T
 	}
 
 	hash := sha1.Sum(b)
+	// member ID对peerURLs、clusterName、nowtime进行Hash
 	m.ID = types.ID(binary.BigEndian.Uint64(hash[:8]))
 	return m
 }

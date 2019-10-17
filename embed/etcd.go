@@ -93,12 +93,26 @@ type peerListener struct {
 // The returned Etcd.Server is not guaranteed to have joined the cluster. Wait
 // on the Etcd.Server.ReadyNotify() channel to know when it completes and is ready for use.
 func StartEtcd(inCfg *Config) (e *Etcd, err error) {
+	// 校验config
 	if err = inCfg.Validate(); err != nil {
 		return nil, err
 	}
+
 	serving := false
+
+	// 构建etcd数据结构体
+	// Peers   []*peerListener
+	// Clients []net.Listener
+	// sctxs            map[string]*serveCtx
+	// metricsListeners []net.Listener
+	// Server *etcdserver.EtcdServer
+	// cfg   Config
+	// stopc chan struct{}
+	// errc  chan error
+	// closeOnce sync.Once
 	e = &Etcd{cfg: *inCfg, stopc: make(chan struct{})}
 	cfg := &e.cfg
+
 	defer func() {
 		if e == nil || err == nil {
 			return
@@ -113,6 +127,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		e = nil
 	}()
 
+	// 配置要监听的集群中所有其他成员的的URLs
 	if e.cfg.logger != nil {
 		e.cfg.logger.Info(
 			"configuring peer listeners",
@@ -129,10 +144,12 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 			zap.Strings("listen-client-urls", e.cfg.getLCURLs()),
 		)
 	}
+	// 配置要监听的集群外所有客户端的的URLs
 	if e.sctxs, err = configureClientListeners(cfg); err != nil {
 		return e, err
 	}
 
+	// 罗列 监听的客户端URLs
 	for _, sctx := range e.sctxs {
 		e.Clients = append(e.Clients, sctx.l)
 	}
@@ -141,73 +158,95 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		urlsmap types.URLsMap
 		token   string
 	)
+
+	// 通过是wal目录下否存在WAL文件，判断该成员是否已被初始化过
 	memberInitialized := true
 	if !isMemberInitialized(cfg) {
 		memberInitialized = false
+		// urlsmap包含了初始化集群成员的URLs
 		urlsmap, token, err = cfg.PeerURLsMapAndToken("etcd")
 		if err != nil {
 			return e, fmt.Errorf("error setting up initial cluster: %v", err)
 		}
 	}
 
+	// 压缩，默认为0，分为两种模式
+	// 第一种模式，周期性压缩模式，时间间隔cfg.AutoCompactionRetention*小时
+	// 第二种模式，revision模式，每隔5min执行一次
 	// AutoCompactionRetention defaults to "0" if not set.
 	if len(cfg.AutoCompactionRetention) == 0 {
 		cfg.AutoCompactionRetention = "0"
 	}
+	// 返回时间周期，或者revision大小
 	autoCompactionRetention, err := parseCompactionRetention(cfg.AutoCompactionMode, cfg.AutoCompactionRetention)
 	if err != nil {
 		return e, err
 	}
 
+	// 备份
 	backendFreelistType := parseBackendFreelistType(cfg.ExperimentalBackendFreelistType)
 
+	// 构建etcdserver
+	// embed/config.go中Config对部分字段的作用和意义有详细解释
+	// etcdserver/config.go中ServerConfig对部分字段的作用和意义有详细解释
 	srvcfg := etcdserver.ServerConfig{
-		Name:                       cfg.Name,
-		ClientURLs:                 cfg.ACUrls,
-		PeerURLs:                   cfg.APUrls,
-		DataDir:                    cfg.Dir,
-		DedicatedWALDir:            cfg.WalDir,
-		SnapshotCount:              cfg.SnapshotCount,
-		SnapshotCatchUpEntries:     cfg.SnapshotCatchUpEntries,
-		MaxSnapFiles:               cfg.MaxSnapFiles,
-		MaxWALFiles:                cfg.MaxWalFiles,
-		InitialPeerURLsMap:         urlsmap,
-		InitialClusterToken:        token,
-		DiscoveryURL:               cfg.Durl,
-		DiscoveryProxy:             cfg.Dproxy,
-		NewCluster:                 cfg.IsNewCluster(),
-		PeerTLSInfo:                cfg.PeerTLSInfo,
+		// 成员
+		Name:       cfg.Name,
+		ClientURLs: cfg.ACUrls, // advertise client urls
+		PeerURLs:   cfg.APUrls, // advertise peer urls
+		// 数据
+		DataDir:         cfg.Dir,
+		DedicatedWALDir: cfg.WalDir,
+		// 快照
+		SnapshotCount:          cfg.SnapshotCount,
+		SnapshotCatchUpEntries: cfg.SnapshotCatchUpEntries,
+		MaxSnapFiles:           cfg.MaxSnapFiles,
+		MaxWALFiles:            cfg.MaxWalFiles,
+		// 集群初始化
+		InitialPeerURLsMap:  urlsmap,
+		InitialClusterToken: token,
+		DiscoveryURL:        cfg.Durl,
+		DiscoveryProxy:      cfg.Dproxy,
+		NewCluster:          cfg.IsNewCluster(),
+		PeerTLSInfo:         cfg.PeerTLSInfo,
+		// 选举
 		TickMs:                     cfg.TickMs,
 		ElectionTicks:              cfg.ElectionTicks(),
 		InitialElectionTickAdvance: cfg.InitialElectionTickAdvance,
-		AutoCompactionRetention:    autoCompactionRetention,
-		AutoCompactionMode:         cfg.AutoCompactionMode,
-		QuotaBackendBytes:          cfg.QuotaBackendBytes,
-		BackendBatchLimit:          cfg.BackendBatchLimit,
-		BackendFreelistType:        backendFreelistType,
-		BackendBatchInterval:       cfg.BackendBatchInterval,
-		MaxTxnOps:                  cfg.MaxTxnOps,
-		MaxRequestBytes:            cfg.MaxRequestBytes,
-		StrictReconfigCheck:        cfg.StrictReconfigCheck,
-		ClientCertAuthEnabled:      cfg.ClientTLSInfo.ClientCertAuth,
-		AuthToken:                  cfg.AuthToken,
-		BcryptCost:                 cfg.BcryptCost,
-		CORS:                       cfg.CORS,
-		HostWhitelist:              cfg.HostWhitelist,
-		InitialCorruptCheck:        cfg.ExperimentalInitialCorruptCheck,
-		CorruptCheckTime:           cfg.ExperimentalCorruptCheckTime,
-		PreVote:                    cfg.PreVote,
-		Logger:                     cfg.logger,
-		LoggerConfig:               cfg.loggerConfig,
-		LoggerCore:                 cfg.loggerCore,
-		LoggerWriteSyncer:          cfg.loggerWriteSyncer,
-		Debug:                      cfg.Debug,
-		ForceNewCluster:            cfg.ForceNewCluster,
-		EnableGRPCGateway:          cfg.EnableGRPCGateway,
-		EnableLeaseCheckpoint:      cfg.ExperimentalEnableLeaseCheckpoint,
-		CompactionBatchLimit:       cfg.ExperimentalCompactionBatchLimit,
+		// 压缩
+		AutoCompactionRetention: autoCompactionRetention,
+		AutoCompactionMode:      cfg.AutoCompactionMode,
+		CompactionBatchLimit:    cfg.ExperimentalCompactionBatchLimit,
+		// 备份
+		QuotaBackendBytes:    cfg.QuotaBackendBytes,
+		BackendBatchLimit:    cfg.BackendBatchLimit,
+		BackendFreelistType:  backendFreelistType,
+		BackendBatchInterval: cfg.BackendBatchInterval,
+		// 请求连接
+		MaxTxnOps:           cfg.MaxTxnOps,
+		MaxRequestBytes:     cfg.MaxRequestBytes,
+		StrictReconfigCheck: cfg.StrictReconfigCheck,
+		// 请求认证
+		ClientCertAuthEnabled: cfg.ClientTLSInfo.ClientCertAuth,
+		AuthToken:             cfg.AuthToken,
+		BcryptCost:            cfg.BcryptCost,
+		CORS:                  cfg.CORS,
+		HostWhitelist:         cfg.HostWhitelist,
+		InitialCorruptCheck:   cfg.ExperimentalInitialCorruptCheck,
+		CorruptCheckTime:      cfg.ExperimentalCorruptCheckTime,
+		PreVote:               cfg.PreVote,
+		// 运行日志
+		Logger:                cfg.logger,
+		LoggerConfig:          cfg.loggerConfig,
+		LoggerCore:            cfg.loggerCore,
+		LoggerWriteSyncer:     cfg.loggerWriteSyncer,
+		Debug:                 cfg.Debug,
+		ForceNewCluster:       cfg.ForceNewCluster,
+		EnableGRPCGateway:     cfg.EnableGRPCGateway,
+		EnableLeaseCheckpoint: cfg.ExperimentalEnableLeaseCheckpoint,
 	}
 	print(e.cfg.logger, *cfg, srvcfg, memberInitialized)
+	//New etcdserver、
 	if e.Server, err = etcdserver.NewServer(srvcfg); err != nil {
 		return e, err
 	}
@@ -225,8 +264,11 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 			return e, err
 		}
 	}
+
+	// 启动etcdserver
 	e.Server.Start()
 
+	// 启动peer/client/metrics三类监听服务，当有请求时，执行对应的Handler
 	if err = e.servePeers(); err != nil {
 		return e, err
 	}

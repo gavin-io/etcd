@@ -306,6 +306,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		}
 	}
 
+	// mode: 700
 	if terr := fileutil.TouchDirAll(cfg.DataDir); terr != nil {
 		return nil, fmt.Errorf("cannot access data directory: %v", terr)
 	}
@@ -325,6 +326,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 	}
 	ss := snap.New(cfg.Logger, cfg.SnapDir())
 
+	// 备份在snapdir/db目录下
 	bepath := cfg.backendPath()
 	beExist := fileutil.Exist(bepath)
 	be := openBackend(cfg)
@@ -335,6 +337,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		}
 	}()
 
+	// http请求连接
 	prt, err := rafthttp.NewRoundTripper(cfg.PeerTLSInfo, cfg.peerDialTimeout())
 	if err != nil {
 		return nil, err
@@ -344,6 +347,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		snapshot *raftpb.Snapshot
 	)
 
+	// raft集群
 	switch {
 	case !haveWAL && !cfg.NewCluster:
 		if err = cfg.VerifyJoinExisting(); err != nil {
@@ -375,6 +379,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		if err = cfg.VerifyBootstrap(); err != nil {
 			return nil, err
 		}
+		// 新建集群
 		cl, err = membership.NewClusterFromURLsMap(cfg.Logger, cfg.InitialClusterToken, cfg.InitialPeerURLsMap)
 		if err != nil {
 			return nil, err
@@ -489,9 +494,11 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		return nil, fmt.Errorf("cannot access member directory: %v", terr)
 	}
 
+	//
 	sstats := stats.NewServerStats(cfg.Name, id.String())
 	lstats := stats.NewLeaderStats(id.String())
 
+	// 心跳
 	heartbeat := time.Duration(cfg.TickMs) * time.Millisecond
 	srv = &EtcdServer{
 		readych:     make(chan struct{}),
@@ -501,6 +508,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		errorc:      make(chan error, 1),
 		v2store:     st,
 		snapshotter: ss,
+		// 新建raftNode
 		r: *newRaftNode(
 			raftNodeConfig{
 				lg:          cfg.Logger,
@@ -511,11 +519,12 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 				storage:     NewStorage(w, ss),
 			},
 		),
-		id:               id,
-		attributes:       membership.Attributes{Name: cfg.Name, ClientURLs: cfg.ClientURLs.StringSlice()},
-		cluster:          cl,
-		stats:            sstats,
-		lstats:           lstats,
+		id:         id,
+		attributes: membership.Attributes{Name: cfg.Name, ClientURLs: cfg.ClientURLs.StringSlice()},
+		cluster:    cl,
+		stats:      sstats,
+		lstats:     lstats,
+		// 同步定时器500ms
 		SyncTicker:       time.NewTicker(500 * time.Millisecond),
 		peerRt:           prt,
 		reqIDGen:         idutil.NewGenerator(uint16(id), time.Now()),
@@ -526,11 +535,13 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 
 	srv.applyV2 = &applierV2store{store: srv.v2store, cluster: srv.cluster}
 
-	srv.be = be
+	// 租约、存储
+	srv.be = be // openBackend
 	minTTL := time.Duration((3*cfg.ElectionTicks)/2) * heartbeat
 
 	// always recover lessor before kv. When we recover the mvcc.KV it will reattach keys to its leases.
 	// If we recover mvcc.KV first, it will attach the keys to the wrong lessor before it recovers.
+	// 租约/TTL
 	srv.lessor = lease.NewLessor(
 		srv.getLogger(),
 		srv.be,
@@ -539,6 +550,8 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 			CheckpointInterval:         cfg.LeaseCheckpointInterval,
 			ExpiredLeasesRetryInterval: srv.Cfg.ReqTimeout(),
 		})
+
+	// 存储客户端提交的数据
 	srv.kv = mvcc.New(srv.getLogger(), srv.be, srv.lessor, &srv.consistIndex, mvcc.StoreConfig{CompactionBatchLimit: cfg.CompactionBatchLimit})
 	if beExist {
 		kvindex := srv.kv.ConsistentIndex()
@@ -568,6 +581,8 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 	}()
 
 	srv.consistIndex.setConsistentIndex(srv.kv.ConsistentIndex())
+
+	// 身份认证
 	tp, err := auth.NewTokenProvider(cfg.Logger, cfg.AuthToken,
 		func(index uint64) <-chan struct{} {
 			return srv.applyWait.Wait(index)
@@ -602,6 +617,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		})
 	}
 
+	// 成员、客户端请求
 	// TODO: move transport initialization near the definition of remote
 	tr := &rafthttp.Transport{
 		Logger:      cfg.Logger,
@@ -724,6 +740,7 @@ func (s *EtcdServer) adjustTicks() {
 // begin serving requests. It must be called before Do or Process.
 // Start must be non-blocking; any long-running server functionality
 // should be implemented in goroutines.
+// 运行etcdserver
 func (s *EtcdServer) Start() {
 	s.start()
 	s.goAttach(func() { s.adjustTicks() })
@@ -731,6 +748,7 @@ func (s *EtcdServer) Start() {
 	s.goAttach(s.purgeFile)
 	s.goAttach(func() { monitorFileDescriptor(s.getLogger(), s.stopping) })
 	s.goAttach(s.monitorVersions)
+	// 线性一致性读，保证对客户端的读请求的响应的数据的一致性
 	s.goAttach(s.linearizableReadLoop)
 	s.goAttach(s.monitorKVHash)
 }
@@ -738,9 +756,11 @@ func (s *EtcdServer) Start() {
 // start prepares and starts server in a new goroutine. It is no longer safe to
 // modify a server's fields after it has been sent to Start.
 // This function is just used for testing.
+// 启动etcdserver
 func (s *EtcdServer) start() {
 	lg := s.getLogger()
 
+	// 快照
 	if s.Cfg.SnapshotCount == 0 {
 		if lg != nil {
 			lg.Info(
@@ -751,6 +771,7 @@ func (s *EtcdServer) start() {
 		} else {
 			plog.Infof("set snapshot count to default %d", DefaultSnapshotCount)
 		}
+		// 如果没有设置，取默认值：100,000
 		s.Cfg.SnapshotCount = DefaultSnapshotCount
 	}
 	if s.Cfg.SnapshotCatchUpEntries == 0 {
@@ -761,9 +782,12 @@ func (s *EtcdServer) start() {
 				zap.Uint64("updated-snapshot-catchup-entries", DefaultSnapshotCatchUpEntries),
 			)
 		}
+		// 如果没有设置，取默认值：5000
+		// 对于有延迟的Follower（一般认为延迟在毫秒之间，产生的日志条目在10K以内），日志条目与领导者相差大于该值，需要完全同步领导者的日志快照
 		s.Cfg.SnapshotCatchUpEntries = DefaultSnapshotCatchUpEntries
 	}
 
+	// 创建通信通道
 	s.w = wait.New()
 	s.applyWait = wait.NewTimeList()
 	s.done = make(chan struct{})
@@ -773,6 +797,7 @@ func (s *EtcdServer) start() {
 	s.readwaitc = make(chan struct{}, 1)
 	s.readNotifier = newNotifier()
 	s.leaderChanged = make(chan struct{})
+
 	if s.ClusterVersion() != nil {
 		if lg != nil {
 			lg.Info(
@@ -801,6 +826,7 @@ func (s *EtcdServer) start() {
 
 	// TODO: if this is an empty log, writes all peer infos
 	// into the first entry
+	// 运行etcdserver
 	go s.run()
 }
 
@@ -906,9 +932,11 @@ type raftReadyHandler struct {
 	updateCommittedIndex func(uint64)
 }
 
+// 运行etcdserver
 func (s *EtcdServer) run() {
 	lg := s.getLogger()
 
+	// 快照
 	sn, err := s.r.raftStorage.Snapshot()
 	if err != nil {
 		if lg != nil {
@@ -919,6 +947,7 @@ func (s *EtcdServer) run() {
 	}
 
 	// asynchronously accept apply packets, dispatch progress in-order
+	// 调度队列，可异步执行Job
 	sched := schedule.NewFIFOScheduler()
 
 	var (
@@ -936,6 +965,8 @@ func (s *EtcdServer) run() {
 		smu.RUnlock()
 		return
 	}
+
+	//raftReadyHandler处理逻辑
 	rh := &raftReadyHandler{
 		getLead:    func() (lead uint64) { return s.getLead() },
 		updateLead: func(lead uint64) { s.setLead(lead) },
@@ -980,6 +1011,7 @@ func (s *EtcdServer) run() {
 			}
 		},
 	}
+	//
 	s.r.start(rh)
 
 	ep := etcdProgress{

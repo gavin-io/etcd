@@ -56,6 +56,7 @@ var (
 func startEtcdOrProxyV2() {
 	grpc.EnableTracing = false
 
+	// 初始化配置
 	cfg := newConfig()
 	defaultInitialCluster := cfg.ec.InitialCluster
 
@@ -141,6 +142,7 @@ func startEtcdOrProxyV2() {
 		}
 		switch which {
 		case dirMember:
+			// 启动etcd server
 			stopped, errc, err = startEtcd(&cfg.ec)
 		case dirProxy:
 			err = startProxy(cfg)
@@ -299,6 +301,7 @@ func startEtcdOrProxyV2() {
 
 // startEtcd runs StartEtcd in addition to hooks needed for standalone etcd.
 func startEtcd(cfg *embed.Config) (<-chan struct{}, <-chan error, error) {
+	// 启动etcd server
 	e, err := embed.StartEtcd(cfg)
 	if err != nil {
 		return nil, nil, err

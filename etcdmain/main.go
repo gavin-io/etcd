@@ -34,6 +34,7 @@ func Main() {
 			cmd = "grpc-proxy"
 		}
 		switch cmd {
+		// etcd gateway, etcd grpc-proxy
 		case "gateway", "grpc-proxy":
 			if err := rootCmd.Execute(); err != nil {
 				fmt.Fprint(os.Stderr, err)
@@ -43,6 +44,7 @@ func Main() {
 		}
 	}
 
+	// etcd
 	startEtcdOrProxyV2()
 }
 

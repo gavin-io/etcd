@@ -832,8 +832,9 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int, rejected 
 func (r *raft) Step(m pb.Message) error {
 	// Handle the message term, which may result in our stepping down to a follower.
 	switch {
+	// 本地msg
 	case m.Term == 0:
-		// local message
+	// 外部msg，非leader
 	case m.Term > r.Term:
 		if m.Type == pb.MsgVote || m.Type == pb.MsgPreVote {
 			force := bytes.Equal(m.Context, []byte(campaignTransfer))
@@ -858,13 +859,14 @@ func (r *raft) Step(m pb.Message) error {
 		default:
 			r.logger.Infof("%x [term: %d] received a %s message with higher term from %x [term: %d]",
 				r.id, r.Term, m.Type, m.From, m.Term)
+			// 降级为Follower
 			if m.Type == pb.MsgApp || m.Type == pb.MsgHeartbeat || m.Type == pb.MsgSnap {
 				r.becomeFollower(m.Term, m.From)
 			} else {
 				r.becomeFollower(m.Term, None)
 			}
 		}
-
+	// 外部msg，leader
 	case m.Term < r.Term:
 		if (r.checkQuorum || r.preVote) && (m.Type == pb.MsgHeartbeat || m.Type == pb.MsgApp) {
 			// We have received messages from a leader at a lower term. It is possible
@@ -904,6 +906,7 @@ func (r *raft) Step(m pb.Message) error {
 		return nil
 	}
 
+	// 消息类型为MsgReadIndex
 	switch m.Type {
 	case pb.MsgHup:
 		if r.state != StateLeader {

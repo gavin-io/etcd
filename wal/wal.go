@@ -140,6 +140,7 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 		}
 		return nil, err
 	}
+	// 64M
 	if err = fileutil.Preallocate(f.File, SegmentSizeBytes, true); err != nil {
 		if lg != nil {
 			lg.Warn(

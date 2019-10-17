@@ -94,6 +94,7 @@ type configFlags struct {
 	proxy        *flags.SelectiveStringValue
 }
 
+// config holds the config for a command line invocation of etcd
 func newConfig() *config {
 	cfg := &config{
 		ec: *embed.NewConfig(),
@@ -138,6 +139,7 @@ func newConfig() *config {
 		"listen-peer-urls",
 		"List of URLs to listen on for peer traffic.",
 	)
+	// bind to UniqueURLs，&UniqueURLs{Values: make(map[string]struct{}), Allowed: make(map[string]struct{})}
 	fs.Var(
 		flags.NewUniqueURLsWithExceptions(embed.DefaultListenClientURLs, ""), "listen-client-urls",
 		"List of URLs to listen on for client traffic.",
@@ -153,6 +155,7 @@ func newConfig() *config {
 	fs.Uint64Var(&cfg.ec.SnapshotCount, "snapshot-count", cfg.ec.SnapshotCount, "Number of committed transactions to trigger a snapshot to disk.")
 	fs.UintVar(&cfg.ec.TickMs, "heartbeat-interval", cfg.ec.TickMs, "Time (in milliseconds) of a heartbeat interval.")
 	fs.UintVar(&cfg.ec.ElectionMs, "election-timeout", cfg.ec.ElectionMs, "Time (in milliseconds) for an election to timeout.")
+	// fast-forward 快进，表示etcd启动后是否立即初始化选举超时时钟
 	fs.BoolVar(&cfg.ec.InitialElectionTickAdvance, "initial-election-tick-advance", cfg.ec.InitialElectionTickAdvance, "Whether to fast-forward initial election ticks on boot for faster election.")
 	fs.Int64Var(&cfg.ec.QuotaBackendBytes, "quota-backend-bytes", cfg.ec.QuotaBackendBytes, "Raise alarms when backend size exceeds the given quota. 0 means use the default quota.")
 	fs.DurationVar(&cfg.ec.BackendBatchInterval, "backend-batch-interval", cfg.ec.BackendBatchInterval, "BackendBatchInterval is the maximum time before commit the backend transaction.")
@@ -268,6 +271,7 @@ func newConfig() *config {
 }
 
 func (cfg *config) parse(arguments []string) error {
+	// 解析命令行参数，参数不全或者错误，将退出并给予帮助提示
 	perr := cfg.cf.flagSet.Parse(arguments)
 	switch perr {
 	case nil:
@@ -299,6 +303,7 @@ func (cfg *config) parse(arguments []string) error {
 	}
 
 	if cfg.configFile != "" {
+		// 如果命令行参数设置了配置文件路径，配置项优先从文件中读取
 		err = cfg.configFromFile(cfg.configFile)
 		if lg := cfg.ec.GetLogger(); lg != nil {
 			lg.Info(
@@ -309,6 +314,7 @@ func (cfg *config) parse(arguments []string) error {
 			plog.Infof("Loading server configuration from %q. Other configuration command line flags and environment variables will be ignored if provided.", cfg.configFile)
 		}
 	} else {
+		// 如果命令行参数没有设置配置文件路径，配置项从命令行读取
 		err = cfg.configFromCmdLine()
 	}
 	// now logger is set up
